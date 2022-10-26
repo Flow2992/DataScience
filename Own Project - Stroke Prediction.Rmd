@@ -1,0 +1,971 @@
+---
+title: "Own Project - Stroke Prediction"
+date: "2022-10-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In this project, clinical patient data are analyzed to predict a stroke event in a patient.
+The analyzed dataset contains patient data listed with some characteristics.
+These characteristics are: gender, age, hypertension, heart_disease, ever_married, work_type, Residence_type, avg_glucose_level, bmi, smoking_status, stroke.
+The dataset contains a little more than 5000 records.
+
+Since strokes are responsible for many deaths each year, it is important to identify the factors that play a role and predict whether a patient will have a stroke based on the degree to which these factors are present in the patient.
+
+In the first step, the data are viewed and cleaned for further analysis. 
+In the second step, the data are analyzed and the individual characteristics are analyzed in more detail and correlations are searched for.
+In the final step, three models are applied to the data to predict stroke. In this step, the models are experimented with to achieve the best results for prediction.
+The models applied are Logistic Regression, Random Forest and XGBoost.
+
+### Packages
+
+It is checked if all required packages are installed, if not required packages will be installed 
+
+```{r}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(naniar)) install.packages("naniar", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("carnet", repos = "http://cran.us.r-project.org")
+if(!require(caTools)) install.packages("caTools", repos = "http://cran.us.r-project.org")
+if(!require(corrplot)) install.packages("corrplot", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repos = "http://cran.us.r-project.org")
+if(!require(imbalance)) install.packages("imbalance", repos = "http://cran.us.r-project.org")
+if(!require(MASS)) install.packages("MASS", repos = "http://cran.us.r-project.org")
+if(!require(ROSE)) install.packages("ROSE", repos = "http://cran.us.r-project.org")
+if(!require(broom)) install.packages("broom", repos = "http://cran.us.r-project.org")
+if(!require(margins)) install.packages("margins", repos = "http://cran.us.r-project.org")
+if(!require(yardstick)) install.packages("yardstick", repos = "http://cran.us.r-project.org")
+if(!require(ROCR)) install.packages("ROCR", repos = "http://cran.us.r-project.org")
+if(!require(glmnet)) install.packages("glmnet", repos = "http://cran.us.r-project.org")
+if(!require(ranger)) install.packages("ranger", repos = "http://cran.us.r-project.org")
+if(!require(evaluate)) install.packages("evaluate", repos = "http://cran.us.r-project.org")
+if(!require(kernlab)) install.packages("kernlab", repos = "http://cran.us.r-project.org")
+if(!require(xgboost)) install.packages("xgboost", repos = "http://cran.us.r-project.org")
+```
+
+Packets are loaded
+
+```{r}
+library(tidyverse)
+library(caret)
+library(data.table)
+library(naniar)
+library(caret)
+library(caTools)
+library(corrplot)
+library(randomForest)
+library(imbalance)
+library(MASS)
+library(ROSE)
+library(broom)
+library(margins)
+library(yardstick)
+library(ROCR)
+library(glmnet)
+library(ranger)
+library(evaluate)
+library(kernlab)
+library(xgboost)
+```
+
+## Data Import
+
+The Dataset is online available to download: 
+https://www.kaggle.com/datasets/fedesoriano/stroke-prediction-dataset?datasetId=1120859&language=R 
+
+The dataset is stored in github and is loaded directly from there
+
+```{r}
+data <- read.csv("https://raw.githubusercontent.com/Flow2992/DataScience/main/healthcare-dataset-stroke-data.csv") # Load Dataset from github
+data <- as.data.table(data)
+```
+
+## Data First look and data cleaning
+
+Data structure
+
+```{r}
+str(data)
+summary (data)
+```
+
+The ID column is not needed and therefore deleted
+
+``` {r}
+data = subset(data, select = -c(id))
+```
+
+Check if data is missing in a variable
+
+``` {r}
+miss_scan_count(data = data, search = list("N/A", "Unknown")) # Data are missing in the variables "bmi" and "smoking_status"
+```
+
+Check which values the individual variables have.
+The variables "age", "avg_glucose_level" and "bmi" are not checked, because they contain to many different values
+
+``` {r}
+table(data$gender)
+table(data$hypertension)
+table(data$heart_disease)
+table(data$ever_married)
+table(data$work_type)
+table(data$Residence_type)
+table(data$smoking_status)
+table(data$stroke)
+```
+
+As data shows there is one record within the variable gender with the value "other". This will be removed
+
+``` {r}
+data <- data %>% filter(data$gender!='Other')
+table(data$gender)
+```
+
+After the individual variables have been checked, the first task is to edit the missing bmi data. 
+The missing values will be replaced with mean values by gender.
+This approach was chosen because the average BMI of men is higher than that of women.
+
+**Replacing missing BMI values**
+
+``` {r}
+suppressWarnings(data$bmi <- as.numeric(as.character(data$bmi))) # transform bmi column to numeric, because the missing values werw not numeric
+
+gender_mean_bmi <- data %>% group_by(gender) %>% summarise(bmi = mean(bmi, na.rm = TRUE)) # calculate gender bmi
+gender_mean_bmi
+
+data[gender == 'Female' & is.na(data$bmi), bmi := gender_mean_bmi[1, 'bmi']] # replace missing female bmi values calculated mean bmi
+data[gender == 'Male'   & is.na(data$bmi), bmi := gender_mean_bmi[2, 'bmi']] # replace missing male bmi values calculated mean bmi
+
+# Recheck for missing data
+miss_scan_count(data = data, search = list("N/A", "Unknown"))
+```
+
+The second task is to edit the smoking_status "Unknown".
+This status is not suitable for further analysis, therefore the unknown values are replaced. 
+In order not to change the data too much, the status "Unknown" is replaced according to the distribution of the other values. 
+The distribution of the other statuses is calculated and the status "Unknown" is replaced according to the distribution.
+
+**Calculation of the probabilities**
+
+``` {r}
+table(data$smoking_status) # smoking status contains a lot of Values "Unknown".
+
+s_dist1 <- ggplot(data, aes(x = smoking_status)) + geom_bar()  # safe plot distribution before replacing the status "Unknown"
+
+FS <- 885 / (3566) # Calculate probability for status formerly smoked
+NS <- 1892 / (3566) # Calculate probability for status never smoked
+S <- 789 / (3566) # Calculate probability for status smokes
+```
+
+**Replace missing values on the basis of the calculated probabilities and remove supporting columns**
+
+``` {r}
+data$prob <- runif(nrow(data))
+data <- data %>% mutate(Proba = ifelse(prob <= FS, "formerly smoked", ifelse(prob <= (FS+NS), "never smoked", ifelse(prob <= 1, "smokes", "Check"))))
+data <- data %>% mutate(smoking_status = ifelse(smoking_status == "Unknown", Proba, smoking_status))
+
+table(data$smoking_status) # ReCheck smoking values distibution
+
+# Delete supporting columns for replacing the status
+data = subset(data, select = -c(prob))
+data = subset(data, select = -c(Proba))
+
+miss_scan_count(data = data, search = list("N/A", "Unknown")) # recheck dataset for missing values
+
+s_dist2 <- ggplot(data, aes(x = smoking_status)) + geom_bar() # safe plot distibution after replacing the status "Unknown"
+```
+
+Visual Comparison of Distibution of smoking values before and after replacing "Unknown" values
+
+**Before replacing the "Unknown" status**
+
+``` {r}
+s_dist1
+```
+
+**After replacing the "Unknown" status**
+
+``` {r}
+s_dist2 
+```
+
+Overall distibution after replacing the "Unknown" status didn't change much, so the replacment worked well
+
+## Data exploration
+
+**Gender distribution**
+
+```{r}
+ggplot(data, aes(x = gender)) + geom_bar() 
+```
+
+**Smoking_status distribution**
+
+```{r}
+ggplot(data, aes(x = smoking_status)) + geom_bar() 
+```
+
+**Heart_disease distribution**
+
+```{r}
+ggplot(data, aes(x = heart_disease)) + geom_bar() 
+```
+
+**Ever_married distribution**
+ 
+```{r}
+ggplot(data, aes(x = ever_married)) + geom_bar()
+```
+
+**Residence_type distribution**
+ 
+```{r}
+ggplot(data, aes(x = Residence_type)) + geom_bar()
+```
+
+**Work_type distribution**
+
+```{r}
+ggplot(data, aes(x = work_type)) + geom_bar()
+```
+
+**Stroke distribution**
+ 
+```{r}
+ggplot(data, aes(x = stroke)) + geom_bar()
+```
+
+**Age distribution**
+ 
+```{r}
+ggplot(data, aes(x = age)) + geom_histogram(bins=30)
+```
+
+**Bmi distribution**
+ 
+```{r}
+ggplot(data, aes(x = bmi)) + geom_histogram(bins=30)
+```
+
+**Avg_glucose_level distribution**
+
+```{r}
+ggplot(data, aes(x = avg_glucose_level)) + geom_histogram(bins=30)
+```
+
+Visual inspection of the data distribution of variables with many expressions in combination with the stroke data to learn more about the data and potential correlations.
+
+**Combination of age and stroke** 
+
+```{r}
+ggplot(data, aes(x = stroke, y = age, group = stroke)) +geom_boxplot() 
+```
+-> age seems to have some sort of impact on stroke
+
+**Combination of bmi and stroke** 
+
+```{r}
+ggplot(data, aes(x = stroke, y = bmi, group = stroke)) +geom_boxplot() 
+```
+-> no clear visual correlation
+
+**Combination of avg_glucose_level and stroke** 
+
+```{r}
+ggplot(data, aes(x = stroke, y = avg_glucose_level, group = stroke)) +geom_boxplot() 
+```
+-> correlation possible
+
+For further analysis, some text values of the variables have to be converted into numerical values
+
+```{r}
+# gender
+data$gender[data$gender == "Male"] <- 1 # Male --> 1
+data$gender[data$gender == "Female"] <- 0 # Female --> 0
+
+# residence typ
+data$Residence_type[data$Residence_type == "Urban"] <- 1 # Urlan --> 1
+data$Residence_type[data$Residence_type == "Rural"] <- 0 # Rural --> 0
+
+# ever married
+data$ever_married[data$ever_married == "Yes"] <- 1 # yes --> 1
+data$ever_married[data$ever_married == "No"] <- 0 # no --> 0
+```
+
+Check dataset after all transformations
+
+```{r}
+str(data) 
+head(data)
+```
+
+Just transformed variables are not yet numeric.
+For further analysis, the variables just transformed are converted into numerical values
+
+```{r}
+suppressWarnings(data$gender <- as.numeric(as.character(data$gender)))
+suppressWarnings(data$Residence_type <- as.numeric(as.character(data$Residence_type)))
+suppressWarnings(data$ever_married <- as.numeric(as.character(data$ever_married)))
+```
+
+**Further visual analysis of the data in connection with stoke, which has not yet been visually examined for correlation**
+
+The goal is to find out which characteristic of the variables could have an influence on stroke
+
+Create new stroke variable and transform variable as factor
+
+```{r}
+data$stroke_1 = ifelse(data$stroke == 1, 'stroke', 'no stroke') # create new stroke variable
+data$stroke_1 = factor(data$stroke_1) # transform new variable as factor
+```
+
+**Combination of gender and stroke** 
+
+```{r}
+ggplot(data, aes(x = gender, fill = stroke_1))+ geom_bar(position = "fill" , alpha = 0.3)
+```
+-> no clear visual impact
+
+**Combination of smoke status and stroke** 
+
+```{r}
+ggplot(data, aes(x = smoking_status, fill = stroke_1))+ geom_bar(position = "fill" , alpha = 0.3) 
+```
+-> no clear visual impact
+
+**Combination of work type and stroke** 
+
+```{r}
+ggplot(data, aes(x = work_type, fill = stroke_1))+ geom_bar(position = "fill" , alpha = 0.3) 
+```
+-> work types "self-employed", "Govt_job" and "Private" could have impact
+
+**Combination of bmi and stroke** 
+
+```{r}
+ggplot(data, aes(x = ever_married, fill = stroke_1))+ geom_bar(position = "fill" , alpha = 0.3) 
+```
+-> marriage could have impact
+
+**Combination of bmi and stroke** 
+
+```{r}
+ggplot(data, aes(x = heart_disease, fill = stroke_1))+ geom_bar(position = "fill" , alpha = 0.3) 
+```
+-> heart disease could have impact
+
+**Combination of bmi and stroke**
+
+```{r}
+ggplot(data, aes(x = hypertension, fill = stroke_1))+ geom_bar(position = "fill" , alpha = 0.3) 
+```
+-> hypertension could have impact
+
+**Combination of bmi and stroke** 
+
+```{r}
+ggplot(data, aes(x = Residence_type, fill = stroke_1))+ geom_bar(position = "fill" , alpha = 0.3) 
+```
+-> no clear visual impact
+
+Remove the just added support column stroke_1
+
+```{r}
+data = subset(data, select = -c(stroke_1))
+```
+
+The final step of data exploration is to examine the correlation of all data
+For this analysis, all data must be available in numerical form, we see that there is data, that is not yet numerical
+
+```{r}
+str(data)
+
+data$hypertension = as.numeric(as.character(data$hypertension)) # transform to numerical data
+data$heart_disease = as.numeric(as.character(data$heart_disease)) # transform to numerical data
+```
+
+Replace text values within the variables and transform the values to numerical data
+
+```{r}
+data$work_type = str_replace_all(data$work_type, c("Never_worked"="0","children"="1", "Private"="2", "Self-employed"="3", "Govt_job"="4")) # replace text with numbers
+data$work_type = as.numeric(data$work_type) # transform to numerical data
+
+data$smoking_status = str_replace_all(data$smoking_status, c("never smoked"="0","formerly smoked"="1", "smokes"="2")) # replace text with numbers
+data$smoking_status = as.numeric(data$smoking_status) # transform to numerical data
+
+data$stroke = as.numeric(as.character(data$stroke))
+```
+
+Recheck if all date is numerical and ready for last correlation analysis
+
+```{r}
+str(data)
+```
+
+**Examine the data set for correlation**
+
+```{r}
+correlation <- cor(data)
+corrplot(correlation, type = "upper", order = "hclust", tl.srt = 50)
+```
+
+One can see that it works. for example, there is a high correlation between married status and age
+As in the previous single variable analysis, there is no particularly strong correlation between stoke and any particular variable. 
+However, it can be seen that age, hypertension, glucose lever heart disease, and marriage status may show a correlation.
+
+## Modeling
+
+### Logistic Regression
+
+Logistic regression is used to make predictions about categorical variables, whereas linear regression is used to make predictions about a continuous variable.
+The model should predict whether a stroke occurs or not. 
+Since the result of the prediction can only take two forms, stroke or no stroke (categorical variable), a logistic regression is used.
+
+**Split data in training and test data with 80% training data**
+
+```{r}
+set.seed(5)
+test_index <- createDataPartition(data$stroke, times = 1, p = 0.8, list = FALSE)
+test <- data[-test_index, ]
+train <- data[test_index, ]
+
+dim(train) 
+dim(test)
+```
+
+**Check the probability of stoke in the two datasets to ensure that the split is usable**
+
+```{r}
+prop.table(table(train$stroke))
+prop.table(table(test$stroke))
+```
+The probabilities are close together, so the datasets are appropriate
+
+**Create Generalized linear model with family = binomial**
+
+```{r}
+glm_regression <- glm(stroke~., data=train, family=binomial)
+```
+
+**Check the model to see which influencing factors the model sees**
+
+```{r}
+summary(glm_regression)
+```
+
+The influencing factors found by the model are consistent with those from the previous corellation analysis
+
+**Test the model using the test set**
+
+```{r}
+prediction <- predict(glm_regression, test, type="response")
+```
+
+**Check prediction results**
+
+```{r}
+pred_test <- ifelse(prediction >0.5,1,0) # if prediction over 0.5 than stroke prediction
+fourfoldplot(table(Prediction = pred_test, Real = test$stroke), conf.level = 0, margin = 1) # check confusion matrix -- > High number of false negative, few true positives
+print(1-mean(pred_test != test$stroke)) # High Accuracy
+```
+
+The results show a high number of false negative, few true positives and high Accuracy
+
+
+**The threshold from which a stoke is predicted is apparently too high, therefore test with a different threshold**
+
+**Prediction threshold 0.4**
+
+```{r}
+pred_test <- ifelse(prediction >0.4,1,0)
+fourfoldplot(table(Prediction = pred_test, Real = test$stroke), conf.level = 0, margin = 1) # check confusion matrix -- > no change to previous setting
+print(1-mean(pred_test != test$stroke)) # same high Accuracy as before
+```
+The results show a high number of false negative, few true positives and high Accuracy --> same as with previous settings
+
+**Prediction threshold 0.3**
+
+```{r}
+pred_test <- ifelse(prediction >0.3,1,0)
+fourfoldplot(table(Prediction = pred_test, Real = test$stroke), conf.level = 0, margin = 1) # check confusion matrix -- > more true positives, but also more false positives
+print(1-mean(pred_test != test$stroke)) # Accuracy just litte changed
+```
+The results show more true positives, approixmatly the same number of false negatives but also more false positives with just marginal changes in accuracy
+
+**Prediction threshold 0.2**
+
+```{r}
+pred_test <- ifelse(prediction >0.2,1,0)
+fourfoldplot(table(Prediction = pred_test, Real = test$stroke), conf.level = 0, margin = 1) # check confusion matrix -- > more true positives, fewer false negatives
+print(1-mean(pred_test != test$stroke)) # Accuracy lower than before, but still good
+```
+The results show again more true positives, fewer false negatives but more false positives and a lower accuracy than before
+
+**Prediction threshold 0.1**
+
+```{r}
+pred_test <- ifelse(prediction >0.1,1,0)
+fourfoldplot(table(Prediction = pred_test, Real = test$stroke), conf.level = 0, margin = 1) # highest number of true positves and lowest number of false negatives.
+print(1-mean(pred_test != test$stroke)) # Accuracy lower than before, but still ok
+```
+
+With this setting the numbers of false positives and true positives are the highest, but the number of false negatives is the lowest. 
+
+In this case, false positives are less bad than false negatives, so these settings will be used
+
+For the fact that the number of true positives goes up, the number of false positives also goes up. In this case, however, it is better to predict false positives and have more true positives than to have fewer false positives and fewer true positives
+
+At the expense of Accuracy the number of true positives increases
+With these results, the model could be used as a kind of warning system in this case
+
+**Test Model with less variable**
+
+Based on the previous model summary and the performed data exploration one can see that age, hypertension, heard disease and glucose levels 
+could have biggest impact out of all variables
+
+Next step ist to try a models with only these variables an see if the pervious results could be increased
+
+**Create new dataset for this test**
+
+```{r}
+data1 <- data
+data1 = subset(data1, select = -c(gender, ever_married, work_type, Residence_type, bmi, smoking_status))
+```
+
+check newly created dataset
+
+```{r}
+str(data1)
+```
+
+**Split data in training and test data with 80% training data**
+
+```{r}
+set.seed(5)
+test_index <- createDataPartition(data1$stroke, times = 1, p = 0.8, list = FALSE)
+test1 <- data1[-test_index, ]
+train1 <- data1[test_index, ]
+```
+
+**Check the probability of stoke in the two datasets to ensure that the split is usable**
+
+```{r}
+prop.table(table(train1$stroke))
+prop.table(table(test1$stroke))
+```
+
+**Create Generalized linear model with family = binomial**
+
+```{r}
+glm_regression1 <- glm(stroke~., data=train1, family=binomial)
+```
+
+**Check the model to see which influencing factors the model sees**
+
+```{r}
+summary(glm_regression1) 
+```
+
+**Test the model using the test set**
+
+```{r}
+prediction1 <- predict(glm_regression1, test1, type="response")
+```
+
+**Check prediction results**
+
+```{r}
+pred_test1 <- ifelse(prediction1 >0.1,1,0) # use best setting from first model
+fourfoldplot(table(Prediction = pred_test1, Real = test1$stroke), conf.level = 0, margin = 1)
+print(1-mean(pred_test1 != test1$stroke))
+```
+
+Both the confusion matix and the accuracy are almost equal to the previous test.
+The model could therefore not be improved in this way. 
+But the result show that the variables that were dropped in this case have no real influence on the model.
+
+**Stepwise AIC**
+
+Next, the stepAIC is tested to automaticly perform the previous manual step and try the model with differnet cominations of the variables.
+The goal is to minimize the stepAIC value to come up with a reduced set of variablethe for the final model
+This approach does not automatically mean that the performance of the model is improved, but is used to simplify the model without significantly affecting its performance. 
+The Dataset from fist model is used, so that the model can chose from all variables  
+
+```{r}
+glm_regression_steps = glm(stroke~., data=train, family = "binomial") %>% stepAIC(trace = TRUE)
+```
+
+**Test the Stepwise AIC model using the test set**
+
+```{r}
+prediction2 <- predict(glm_regression_steps, test, type="response") # predict with steps model
+```
+
+**Check prediction results**
+
+```{r}
+pred_test2 <- ifelse(prediction2 >0.1,1,0) # use the best setting from first model
+fourfoldplot(table(Prediction = pred_test2, Real = test$stroke), conf.level = 0, margin = 1) # Not much difference from the previous two attempts. The number of false positives drops only minimally
+print(1-mean(pred_test2 != test$stroke))
+```
+
+The Stepwiese AIC model with an automatically reduced number of variables has not brought any major changes either. So all attempts to change the combination of variables did not bring much. The results all remain very similar
+
+**Oversampling**
+
+Since the number of stokes is very small compared to the number of non-strokes, another possibility is oversample the data to artificially adjust the number of strokes and non-strokes.
+The dataset that was used for the first model is now used again and oversampling is applied to it
+
+**Artificially increase the number of strokes**
+
+```{r}
+data2 <- ovun.sample(stroke~.,data = data, method = 'over',p = 0.3)$data # the number of strokes will artificially be increased
+```
+
+**Before oversampling**
+
+```{r}
+table(data$stroke)
+
+```
+
+**After oversampling**
+
+```{r}
+table(data2$stroke) 
+```
+--> number of strokes increased significant
+
+**Split data in training and test data with 80% training data**
+
+```{r}
+set.seed(5)
+test_index <- createDataPartition(data2$stroke, times = 1, p = 0.8, list = FALSE)
+test2 <- data2[-test_index, ]
+train2 <- data2[test_index, ]
+```
+
+**Check the probability of stoke in the two datasets to ensure that the split is usable**
+
+```{r}
+prop.table(table(train2$stroke)) 
+prop.table(table(test2$stroke))
+```
+
+The probabilities are close together, so the datasets are appropriate.
+Also here one can see the result of the oversampling, because the probability for stoke in this data is much higher than in the previous.
+
+**Create Generalized linear model with family = binomial**
+
+```{r}
+glm_regression2 <- glm(stroke~., data=train2, family=binomial)
+```
+
+**Check the model to see which influencing factors the model sees**
+
+```{r}
+summary(glm_regression2)
+```
+
+**Test the model using the test set**
+
+```{r}
+prediction3 <- predict(glm_regression2, test2, type="response")
+```
+
+**Check prediction results**
+
+```{r}
+pred_test3 <- ifelse(prediction3 >0.1,1,0) # use the best setting from first model
+fourfoldplot(table(Prediction = pred_test3, Real = test2$stroke), conf.level = 0, margin = 1) 
+print(1-mean(pred_test3 != test2$stroke))
+```
+
+Even though it is not really comparable to the previous models without oversampling, the number of false negatives is lower compared to the models without oversampling, what is good from medical point of view
+The accuracy droped significantly
+
+**Testing the algorithm trained with oversampling with the test data without oversampling**
+
+```{r}
+prediction4 <- predict(glm_regression2, test, type="response")
+```
+
+**Check prediction results**
+
+```{r}
+pred_test4 <- ifelse(prediction4 >0.1,1,0) # use the best setting from first model
+fourfoldplot(table(Prediction = pred_test4, Real = test$stroke), conf.level = 0, margin = 1) # Not much difference from the previous two attempts. The number of false positives drops only minimally
+print(1-mean(pred_test4 != test$stroke))
+```
+
+In this case, the number of false negatives is very low and the number of true positives is the highest of all those tested.
+From a medical point of view, this model is therefore the best at first glance.
+Unfortunately, the number of false positives is also very high and the accuracy very low.
+So it looks like the first model is still the best so far
+
+### Random Forest
+
+Next, the random forest model is tested, as this model can also be used to predict 
+classifications and is used for input variables without much correlation. (as in as in the dataset at hand) This model is also advanced which is why better results are hoped for
+
+The train and test dataset from the first model will be used, but the searched variable, stroke, is transformed into a factor
+
+```{r}
+train$stroke <- as.character(train$stroke)
+train$stroke <- as.factor(train$stroke)
+test$stroke <- as.character(test$stroke)
+test$stroke <- as.factor(test$stroke)
+```
+
+**Create random forest model**
+
+```{r}
+ran_for = randomForest(stroke~., train, importance=TRUE)
+summary(ran_for)
+ran_for
+```
+
+**Test model on test data**
+
+```{r}
+rf_predict = predict(ran_for, test)
+```
+
+**Check prediction results**
+
+```{r}
+fourfoldplot(table(Prediction = rf_predict, Real = test$stroke), conf.level = 0, margin = 1) 
+print(1-mean(rf_predict != test$stroke)) 
+```
+
+The model produces very similar results to the very first attempt at logistic regression. 
+There are very few true positives, relatively many false negatives, but very high accuracy
+Since only very few ture positives are detected, the model is not particularly good from a medical point of view.
+
+**Test whether adjusting model variables can improve the model***
+
+In this step the error rate should be minimized by finding optimal model variables
+
+```{r}
+NTrees=1:10 # Number of trees (tried with higher nubers, but calculation will take super long)
+MTRY=1:10 # Number of variables (tried with higher nubers, but calculation will take super long)
+NODE=1:50 # Minimum size of terminal nodes
+MinErr=1 
+MinNT=0
+minNDT=0
+minMT=0
+
+for(nt in NTrees){
+  for(mt in MTRY){
+    for(nd in NODE){
+      ran_for2 = randomForest(stroke~., type="classification", train, ntree=nt, mtry=mt, nodesize=nd, importance=TRUE)
+      rf_predict2=predict(ran_for2, train)
+      Err=mean(rf_predict2 != train$stroke)
+      if(Err < MinErr){
+        MinErr=Err
+        minNT=nt
+        minNDT=nd
+        minMT=mt
+        #print(c("NT=",nt," MT=",mt," NDT=",ndt," minE=",MinError))
+      }
+    }
+  }
+}
+print(c("NTrees=",minNT," MTRY=",minMT," NODE=",minNDT," MinErr=",MinErr)) # best models variables to minimize the error
+```
+
+**The calculated variables are inserted into the model**
+
+```{r}
+ran_for3 = randomForest(stroke~., type="classification", train, ntree=minNT, mtry=minMT, nodesize=minNDT, importance=TRUE)
+summary(ran_for3)
+ran_for3
+```
+
+**Test the model using the test set**
+
+```{r}
+rf_predict3=predict(ran_for3, test)
+```
+
+**Check prediction results**
+
+```{r}
+fourfoldplot(table(Prediction = rf_predict3, Real = test$stroke), conf.level = 0, margin = 1) 
+print(1-mean(rf_predict3 != test$stroke)) 
+```
+
+With optimal model variables, the model is not performing much better
+The accuracy is still high
+But with still only few true positives the model is still not very useful
+
+**Oversampling**
+
+**next, the model is tested with the oversampling data**
+
+```{r}
+table(data2$stroke) # qick look at oversampled data
+```
+
+The train and test dataset from oversampling is transformed into a factor
+
+```{r}
+train2$stroke <- as.character(train2$stroke)
+train2$stroke <- as.factor(train2$stroke)
+test2$stroke <- as.character(test2$stroke)
+test2$stroke <- as.factor(test2$stroke)
+```
+
+**Create random forest model with oversampled data**
+
+```{r}
+ran_for4 = randomForest(stroke~., train2, importance=TRUE)
+summary(ran_for4)
+ran_for4 # the error rate has fallen sharply 
+```
+
+**Test model on test data**
+
+```{r}
+rf_predict4 = predict(ran_for4, test2)
+```
+
+**Check prediction results**
+
+```{r}
+fourfoldplot(table(Prediction = rf_predict4, Real = test2$stroke), conf.level = 0, margin = 1) 
+print(1-mean(rf_predict4 != test2$stroke))
+```
+
+With oversampled data the model performed way better. The number of False positives and false negatives is quit low and the number of true positives is quite high
+The accuracy is also high
+
+**Test model on test data without oversampling**
+
+```{r}
+rf_predict5 = predict(ran_for4, test)
+```
+
+**Check prediction results**
+
+```{r}
+fourfoldplot(table(Prediction = rf_predict5, Real = test$stroke), conf.level = 0, margin = 1) 
+print(1-mean(rf_predict5 != test$stroke))
+```
+
+Also with not oversampled test date the model which was trained with oversampled data performes quite good.
+The accuracy is also high and the number of true positives is also high. The number of false positves and fales negatives aus low.
+So far the random forest model, trained with oversampled data performed the best.
+
+### XGBoost
+
+As last model XGBoost will be used since is very powerful for classification and regression
+Especially in many ML competioions XGBoost has achieved good results. Also XGBoost models are  widely used machine learning algorithms nowadays.
+
+**Create train and test data**
+
+```{r}
+set.seed(5)
+test_index <- createDataPartition(data$stroke, times = 1, p = 0.75, list = FALSE)
+test3 <- data[-test_index, drop=FALSE]
+train3 <- data[test_index, drop=FALSE]
+
+dim(train3) 
+dim(test3)
+```
+
+Transform the searched variable, stroke, into a factor
+
+```{r}
+train$stroke <- as.character(train$stroke)
+train$stroke <- as.factor(train$stroke)
+test$stroke <- as.character(test$stroke)
+test$stroke <- as.factor(test$stroke)
+```
+
+Since it can be very complex to experiment with all settings, widely used settings were taken.
+
+```{r}
+grid <- expand.grid(nrounds = 3500, max_depth = 7,eta = 0.01, gamma = 0.01, colsample_bytree = 0.75, min_child_weight = 0, subsample = 0.5) # create grid with standard values
+Control <- trainControl(method = "cv", number = 5)
+```
+
+**Train the model**
+
+```{r}
+xgb_model <- caret::train(stroke ~ ., train, method = "xgbTree", tuneLength = 3, tuneGrid = grid, trControl = Control)
+```
+
+```{r}
+xgb_model
+```
+
+**Test model with test data**
+
+```{r}
+xbg_pred <- predict(xgb_model, newdata = test3) 
+```
+
+**Check prediction results**
+
+```{r}
+fourfoldplot(table(Prediction = xbg_pred, Real = test3$stroke), conf.level = 0, margin = 1) 
+print(1-mean(xbg_pred != test3$stroke))
+```
+
+This model also delivers good results. The true positives are much highter than on the first model wile the accuracy is as high as for the first model.
+
+## Results
+
+After an initial data review and data cleaning, three different ML algorithms were used to predict strokes. The first model is a logistic regression model. With the default settings, a high accuracy could be achieved, but the results were not particularly good, since there were only very few ture positives. In the first step, experiments were made with the threshold value above which a prediction is counted as a hit. The threshold value of 0.1 was finally taken.
+With this setting the number of false positives is the highest, but the number of false negatives is the lowest.
+For the data used, false positives are less bad than false negatives. For the fact that the number of true positives goes up, the number of false positives also goes up. In this case, however, it is better to predict false positives and have more true positives than to have fewer false positives and fewer true positives. At the expense of Accuracy the number of true positives increases With these results, the model could be used as a kind of warning system in this case.
+In the further course, experiments were carried out to reduce the influencing variables of the model. On the one hand, variables were selected manually on the basis of the previous data analysis, and on the other hand, an automated approach was used to reduce the number of variables.
+However, the results were very similar to the first results with this model.
+Since comparatively few data with stroke were available, the method of oversampling was tested in a final cut.
+With this approach the number of false negatives is lower compared to the other aproaches without oversampling, what is good from medical point of view. The accuracy droped significantly. 
+If the model trained with the oversampled data is applied to the test data without oversampling  the number of false negatives is very low and the number of true positives is the highest of all those tested. From a medical point of view, this model is therefore the best at first glance.
+Unfortunately, the number of false positives is also very high and the accuracy very low. 
+Even if the model could be used as an early warning system, a lot of warnings would be issued.
+So it looks like the first model is still the best so far.
+
+Next, a Random Forest model was used. With the default settings, the results were similarly poor as with the first model with default settings.
+Subsequently, the model parameters were adjusted using an automated approach and the model was able to achieve slightly better results.
+But with optimal model variables, the model is still not performing much better. The accuracy is still high, but with still only few true positives the model is still not very useful.
+For this reason, oversampling was also applied in this model. With oversampled data the model performed way better. The number of False positives and false negatives is quit low and the number of true positives is quite high. The accuracy is also high.
+Also with not oversampled test date the model which was trained with oversampled data performes quite good. The accuracy is also high and the number of true positives is also high. The number of false positves and fales negatives is low. So far the random forest model, trained with oversampled data performed the best.
+
+The last model used was an XGBoost model. The model was not tested in standard settings, since the previous models both performed quite poorly with standard settings. The model was therefore used with frequently used settings from other test cases.
+This model also delivers good results. The true positives are much highter than on the first model wile the accuracy is as high as for the first model.
+
+In summary, the Random Forest model trained with oversampling data gave the best results. The decision whether the XGBoost model or the Logistic Regression model yields better results is difficult to make. The Logistic Regression model predicts many false positives, but also the most true positives and the fewest false negatives, which is important from a medical point of view. The XGBoost model predicts few false positives and relatively many true positives for the first attempt. But also many false negatives and since this is a disease that is usually fatal, it is important from a medical point of view to predict few false negatives and rather too many false positives.
+
+From a medical point of view, therefore, the logistic regression model is probably the second-best.
+
+## Conclusion
+
+Starting from a dataset containing clinical patient data, 3 different ML models, including advanced ML models, were applied to predict whether or not a stroke was present based on different factors. One problem with the data was that there were relatively few patients with stroke in the data. This problem was at least partially overcome by oversampling. Based on the analyses, as explained in the Results section, a random forest model was best suited for prediction. In general, this work can be used to better understand the factors leading to stroke and to predict strokes. With the help of such models, it may be possible to predict patients who are at increased risk of stroke due to various factors. As a next step, the individual model parameters could be further adjusted to improve the results. In addition, the models could be tested on even larger data sets and further clinical factors could be included in the data. So far, the model results have mainly been subjective compared from a medical point of view. The model results could also be compared on the basis of various KPIs to find the best scientific model.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
